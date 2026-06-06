@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>惯性+地磁融合 · 本地演示（多场景）</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "Segoe UI", system-ui, sans-serif; max-width: 960px; margin: 20px auto; padding: 0 16px 40px; }
+    h1 { font-size: 1.3rem; margin-bottom: 4px; }
+    .tip { color: #555; font-size: 13px; margin: 8px 0 16px; }
+    #status { color: #0066cc; font-weight: 600; margin-bottom: 12px; }
+    .toolbar { margin-bottom: 16px; }
+    .toolbar button.primary { background: #0066cc; color: #fff; border: none; }
+    .toolbar button.primary:hover { background: #0052a3; }
+    section { margin-bottom: 20px; }
+    section h2 { font-size: 0.95rem; color: #333; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin: 0 0 10px; }
+    .grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .grid button { padding: 8px 12px; font-size: 13px; cursor: pointer; border: 1px solid #ccc;
+                    border-radius: 6px; background: #f8f8f8; }
+    .grid button:hover { background: #e8f0fe; border-color: #0066cc; }
+    .grid button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #log { background: #1a1a1a; color: #e0e0e0; padding: 14px; border-radius: 8px;
+           font-family: Consolas, "Courier New", monospace; font-size: 12px;
+           white-space: pre-wrap; min-height: 200px; max-height: 420px; overflow-y: auto; }
+    canvas { display: block; width: 100%; max-width: 920px; height: 220px; margin-top: 16px;
+             border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+    .chart-title { font-size: 13px; color: #444; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>惯性导航 + 地磁融合 · 本地多场景演示</h1>
+  <p class="tip">双击本文件用 Chrome / Edge 打开。首次需联网加载 Pyodide。共 <strong>18</strong> 个运动场景 +「全部运行」。</p>
+  <p id="status">正在加载 Python 引擎…</p>
+
+  <div class="toolbar">
+    <button class="primary" id="btnAll" disabled>▶ 全部运行（汇总表）</button>
+    <button id="btnClear" disabled>清空日志</button>
+  </div>
+
+  <section>
+    <h2>一、静止 / 标定</h2>
+    <div class="grid" id="g1"></div>
+  </section>
+  <section>
+    <h2>二、转弯（纯航向）</h2>
+    <div class="grid" id="g2"></div>
+  </section>
+  <section>
+    <h2>三、直线运动（加减速）</h2>
+    <div class="grid" id="g3"></div>
+  </section>
+  <section>
+    <h2>四、组合机动</h2>
+    <div class="grid" id="g4"></div>
+  </section>
+  <section>
+    <h2>五、噪声 / 干扰（鲁棒性）</h2>
+    <div class="grid" id="g5"></div>
+  </section>
+
+  <pre id="log"></pre>
+  <p class="chart-title" id="chartLabel" style="display:none">最近一次单场景：航向曲线</p>
+  <canvas id="chart" width="920" height="220" style="display:none"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+  <script>
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const chartEl = document.getElementById('chart');
+    const chartLabel = document.getElementById('chartLabel');
+    let pyodide = null;
+
+    function log(msg) { logEl.textContent += msg + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+
+    const EXAMPLES = [
+      { id: 'ex01', group: 'g1', label: '01 静止 5s', fn: 'ex01_static_5s' },
+      { id: 'ex02', group: 'g1', label: '02 静止 30s', fn: 'ex02_static_30s' },
+      { id: 'ex03', group: 'g1', label: '03 静止+传感器噪声', fn: 'ex03_static_noisy' },
+      { id: 'ex04', group: 'g2', label: '04 慢转弯 1°/s·20s', fn: 'ex04_turn_slow' },
+      { id: 'ex05', group: 'g2', label: '05 中速转弯 3°/s·10s', fn: 'ex05_turn_medium' },
+      { id: 'ex06', group: 'g2', label: '06 快转弯 10°/s·6s', fn: 'ex06_turn_fast' },
+      { id: 'ex07', group: 'g2', label: '07 左转10s再右转10s', fn: 'ex07_s_turn' },
+      { id: 'ex08', group: 'g2', label: '08 原地转一圈 360°', fn: 'ex08_spin_360' },
+      { id: 'ex09', group: 'g3', label: '09 匀加速北向 0.5m/s²·8s', fn: 'ex09_accel_north' },
+      { id: 'ex10', group: 'g3', label: '10 匀减速刹车·6s', fn: 'ex10_brake' },
+      { id: 'ex11', group: 'g3', label: '11 巡航匀速·15s', fn: 'ex11_cruise' },
+      { id: 'ex12', group: 'g3', label: '12 东向侧向加速·8s', fn: 'ex12_accel_east' },
+      { id: 'ex13', group: 'g4', label: '13 转弯+前进·12s', fn: 'ex13_turn_and_go' },
+      { id: 'ex14', group: 'g4', label: '14 蛇形机动·20s', fn: 'ex14_zigzag' },
+      { id: 'ex15', group: 'g4', label: '15 走停走·3段', fn: 'ex15_stop_go' },
+      { id: 'ex16', group: 'g4', label: '16 8字形·24s', fn: 'ex16_figure8' },
+      { id: 'ex17', group: 'g5', label: '17 大陀螺噪声', fn: 'ex17_high_gyro_noise' },
+      { id: 'ex18', group: 'g5', label: '18 中途磁干扰5s', fn: 'ex18_mag_glitch' },
+    ];
+
+    const PY = `
+import numpy as np
+import json
+
+def normalize(v, eps=1e-12):
+    n = np.linalg.norm(v)
+    return v / n if n >= eps else np.array([0., 0., 1.])
+
+def skew(v):
+    x, y, z = v
+    return np.array([[0,-z,y],[z,0,-x],[-y,x,0]], float)
+
+def quat_multiply(q, p):
+    w1,x1,y1,z1 = q; w2,x2,y2,z2 = p
+    return np.array([w1*w2-x1*x2-y1*y2-z1*z2, w1*x2+x1*w2+y1*z2-z1*y2,
+                     w1*y2-x1*z2+y1*w2+z1*x2, w1*z2+x1*y2-y1*x2+z1*w2])
+
+def quat_normalize(q):
+    n = np.linalg.norm(q)
+    return q/n if n > 1e-12 else np.array([1.,0,0,0])
+
+def quat_from_delta_angle(dtheta):
+    half = 0.5*dtheta; th = np.linalg.norm(half)
+    if th < 1e-12: return np.array([1.,0,0,0])
+    s = np.sin(th)/th
+    return quat_normalize(np.array([np.cos(th), half[0]*s, half[1]*s, half[2]*s]))
+
+def quat_to_rot_b_to_n(q):
+    w,x,y,z = quat_normalize(q)
+    return np.array([
+        [1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+        [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+        [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
+
+def integrate_quat_gyro(q, gyro, dt):
+    w = np.linalg.norm(gyro)
+    if w < 1e-12: return quat_normalize(q)
+    ha = 0.5*w*dt; s = np.sin(ha)/w
+    dq = np.array([np.cos(ha), gyro[0]*s, gyro[1]*s, gyro[2]*s])
+    return quat_normalize(quat_multiply(q, dq))
+
+class MEKF9:
+    def __init__(self, dt, m_unit_n, sigma_gyro=0.02, sigma_mag=0.05, sigma_accel=0.3):
+        self.dt = dt
+        self.g_unit_n = np.array([0.,0.,1.])
+        self.m_unit_n = normalize(np.asarray(m_unit_n, float))
+        self.q = np.array([1.,0,0,0])
+        self.x = np.zeros(9)
+        self.P = np.eye(9)*0.01
+        self.Q = np.zeros((9,9))
+        self.Q[:3,:3] = np.eye(3)*(sigma_gyro**2)*dt
+        self.R_acc = np.eye(3)*(sigma_accel**2)
+        self.R_mag = np.eye(3)*(sigma_mag**2)
+
+    def predict(self, gyro, accel=None):
+        omega = gyro - self.x[3:6]
+        self.q = integrate_quat_gyro(self.q, omega, self.dt)
+        F = np.eye(9); F[:3,:3] -= skew(omega)*self.dt; F[:3,3:6] = -np.eye(3)*self.dt
+        self.P = F@self.P@F.T + self.Q
+
+    def _inject(self):
+        self.q = quat_normalize(quat_multiply(self.q, quat_from_delta_angle(self.x[:3])))
+        self.x[:3] = 0
+
+    def _update(self, z, h, H, R):
+        y = z-h; S = H@self.P@H.T + R; K = self.P@H.T@np.linalg.inv(S)
+        self.x += K@y; I = np.eye(9)
+        self.P = (I-K@H)@self.P@(I-K@H).T + K@R@K.T; self._inject()
+
+    def update_accel(self, accel):
+        C = quat_to_rot_b_to_n(self.q)
+        h = normalize(C.T @ (-self.g_unit_n))
+        z = normalize(accel)
+        H = np.zeros((3,9)); H[:3,:3]=skew(h); H[:3,6:]=np.eye(3)
+        self._update(z,h,H,self.R_acc)
+
+    def update_mag(self, mag):
+        C = quat_to_rot_b_to_n(self.q)
+        h = normalize(C.T @ self.m_unit_n)
+        z = normalize(mag)
+        H = np.zeros((3,9)); H[:3,:3]=skew(h)
+        self._update(z,h,H,self.R_mag)
+
+class InsMagNavigator:
+    def __init__(self, dt, mag_field_ned, **kw):
+        self.dt = dt
+        self.ekf = MEKF9(dt, mag_field_ned, **kw)
+        self.p = np.zeros(3); self.v = np.zeros(3); self.g = np.array([0.,0.,9.81])
+
+    def step_imu(self, gyro, accel, use_acc=True):
+        self.ekf.predict(gyro, accel)
+        if use_acc: self.ekf.update_accel(accel)
+        C = quat_to_rot_b_to_n(self.ekf.q)
+        a = C @ (accel - self.ekf.x[6:9]) + self.g
+        self.v += a*self.dt; self.p += self.v*self.dt
+
+    def step_mag(self, mag):
+        self.ekf.update_mag(mag)
+
+    def yaw_deg(self):
+        C = quat_to_rot_b_to_n(self.ekf.q)
+        return float(np.rad2deg(np.arctan2(C[1,0], C[0,0])))
+
+DT = 0.01
+MAG_N = np.array([np.cos(np.deg2rad(60)), 0, np.sin(np.deg2rad(60))])
+G = np.array([0.,0.,9.81])
+
+def build_segment(seconds, turn_rate_deg_s=0., accel_ned=None, noise=False, seed=0,
+                  gyro_noise=0.002, accel_noise=0.03, mag_noise=0.5, q0=None):
+    if accel_ned is None:
+        accel_ned = np.array([0.,0.,0.])
+    accel_ned = np.asarray(accel_ned, float)
+    tr = np.deg2rad(turn_rate_deg_s)
+    q = np.array([1.,0,0,0]) if q0 is None else np.asarray(q0, float).copy()
+    rng = np.random.default_rng(seed)
+    out = []
+    yaws_true = []
+    for _ in range(int(seconds/DT)):
+        gyro = np.array([0.,0.,tr])
+        C = quat_to_rot_b_to_n(q)
+        accel = C.T @ (accel_ned - G)
+        mag = C.T @ MAG_N; mag = mag/np.linalg.norm(mag)*40
+        if noise:
+            gyro = gyro + rng.normal(0, gyro_noise, 3)
+            accel = accel + rng.normal(0, accel_noise, 3)
+            mag = mag + rng.normal(0, mag_noise, 3)
+        out.append((gyro.copy(), accel.copy(), mag.copy()))
+        yaws_true.append(float(np.rad2deg(np.arctan2(C[1,0], C[0,0]))))
+        q = integrate_quat_gyro(q, np.array([0.,0.,tr]), DT)
+        q = quat_normalize(q)
+    return out, yaws_true
+
+def concat_segments(*parts):
+    samples, yaws = [], []
+    for s, y in parts:
+        samples.extend(s)
+        yaws.extend(y)
+    return samples, yaws
+
+def run_fusion(name, samples, yaws_true=None, mag_every=5, use_acc=True, ekf_kw=None):
+    ekf_kw = ekf_kw or {}
+    nav = InsMagNavigator(DT, MAG_N, **ekf_kw)
+    yaws_est, pos_hist = [], []
+    for k, (g,a,m) in enumerate(samples):
+        nav.step_imu(g, a, use_acc=use_acc if callable(use_acc) else (k%2==0 if use_acc is True else use_acc))
+        if k % mag_every == 0:
+            nav.step_mag(m)
+        yaws_est.append(nav.yaw_deg())
+        pos_hist.append(nav.p.copy())
+    dy = yaws_est[-1] - yaws_est[0]
+    dt_true = (yaws_true[-1]-yaws_true[0]) if yaws_true else None
+    yaw_rmse = None
+    if yaws_true and len(yaws_true)==len(yaws_est):
+        err = np.array(yaws_est) - np.array(yaws_true)
+        err = (err + 180) % 360 - 180
+        yaw_rmse = float(np.sqrt(np.mean(err**2)))
+    return {
+        "name": name,
+        "n": len(samples),
+        "duration": len(samples)*DT,
+        "pos": np.round(nav.p, 2).tolist(),
+        "vel": np.round(nav.v, 2).tolist(),
+        "yaw_change": round(dy, 2),
+        "yaw_true_change": round(dt_true, 2) if dt_true is not None else None,
+        "yaw_rmse_deg": round(yaw_rmse, 2) if yaw_rmse is not None else None,
+        "yaws": yaws_est,
+        "text": _format_result(name, len(samples), nav.p, nav.v, dy, dt_true, yaw_rmse)
+    }
+
+def _format_result(name, n, p, v, dy, dt_true, yaw_rmse):
+    lines = [f"--- {name} ---", f"  样本 {n}  时长 {n*DT:.1f}s",
+             f"  末位置 NED(m): {np.round(p,2).tolist()}",
+             f"  末速度 NED(m/s): {np.round(v,2).tolist()}",
+             f"  航向变化(估计): {dy:.2f} deg"]
+    if dt_true is not None:
+        lines.append(f"  航向变化(真值): {dt_true:.2f} deg")
+    if yaw_rmse is not None:
+        lines.append(f"  航向 RMSE: {yaw_rmse:.2f} deg")
+    return "\\n".join(lines) + "\\n"
+
+def run_and_json(fn_name):
+    r = globals()[fn_name]()
+    out = {k: r[k] for k in r if k != "yaws"}
+    out["yaws"] = r["yaws"]
+    return json.dumps(out)
+
+# ---------- 18 examples ----------
+def ex01_static_5s():
+    s,_ = build_segment(5, 0, [0,0,0])
+    return run_fusion("01 静止5s", s, [0]*len(s))
+
+def ex02_static_30s():
+    s,_ = build_segment(30, 0, [0,0,0])
+    return run_fusion("02 静止30s", s, [0]*len(s))
+
+def ex03_static_noisy():
+    s,yt = build_segment(10, 0, [0,0,0], noise=True, seed=1)
+    return run_fusion("03 静止+噪声", s, yt)
+
+def ex04_turn_slow():
+    s,yt = build_segment(20, 1, [0,0,0], noise=True)
+    return run_fusion("04 慢转1deg/s", s, yt)
+
+def ex05_turn_medium():
+    s,yt = build_segment(10, 3, [0,0,0], noise=True)
+    return run_fusion("05 中转3deg/s", s, yt)
+
+def ex06_turn_fast():
+    s,yt = build_segment(6, 10, [0,0,0], noise=True)
+    return run_fusion("06 快转10deg/s", s, yt)
+
+def ex07_s_turn():
+    a,ya = build_segment(10, 3, noise=True, seed=2)
+    b,yb = build_segment(10, -3, noise=True, seed=3)
+    s,yt = concat_segments((a,ya),(b,yb))
+    return run_fusion("07 S弯", s, yt)
+
+def ex08_spin_360():
+    s,yt = build_segment(36, 10, noise=True)  # 10deg/s * 36s = 360
+    return run_fusion("08 转360", s, yt)
+
+def ex09_accel_north():
+    s,yt = build_segment(8, 0, [0.5,0,0], noise=True)
+    return run_fusion("09 北向加速", s, yt)
+
+def ex10_brake():
+    s1,yt1 = build_segment(4, 0, [0.4,0,0], noise=True, seed=4)
+    s2,yt2 = build_segment(6, 0, [-0.4,0,0], noise=True, seed=5)
+    s,yt = concat_segments((s1,yt1),(s2,yt2))
+    return run_fusion("10 加速再刹车", s, yt)
+
+def ex11_cruise():
+    s0, yt0 = build_segment(2, 0, [1.0, 0, 0], noise=True, seed=6)
+    s1, yt1 = build_segment(15, 0, [0, 0, 0], noise=True, seed=7)
+    s, yt = concat_segments((s0, yt0), (s1, yt1))
+    return run_fusion("11 巡航", s, yt)
+
+def ex12_accel_east():
+    s,yt = build_segment(8, 0, [0,0.4,0], noise=True)
+    return run_fusion("12 东向加速", s, yt)
+
+def ex13_turn_and_go():
+    s,yt = build_segment(12, 2, [0.3,0,0], noise=True)
+    return run_fusion("13 转弯+前进", s, yt)
+
+def ex14_zigzag():
+    parts = []
+    for i, rate in enumerate([4,-4,4,-4,4]):
+        seg, y = build_segment(4, rate, [0.2,0,0], noise=True, seed=10+i)
+        parts.append((seg,y))
+    s,yt = concat_segments(*parts)
+    return run_fusion("14 蛇形", s, yt)
+
+def ex15_stop_go():
+    s,yt = concat_segments(
+        build_segment(3, 0, [0.5,0,0], noise=True, seed=20),
+        build_segment(2, 0, [0,0,0], noise=True, seed=21),
+        build_segment(3, 0, [0.5,0,0], noise=True, seed=22),
+        build_segment(2, 0, [0,0,0], noise=True, seed=23),
+        build_segment(3, 0, [0.5,0,0], noise=True, seed=24),
+    )
+    return run_fusion("15 走停走", s, yt)
+
+def ex16_figure8():
+    s,yt = concat_segments(
+        build_segment(12, 5, [0.15,0,0], noise=True, seed=30),
+        build_segment(12, -5, [0.15,0,0], noise=True, seed=31),
+    )
+    return run_fusion("16 8字", s, yt)
+
+def ex17_high_gyro_noise():
+    s,yt = build_segment(10, 3, noise=True, gyro_noise=0.05, accel_noise=0.08, mag_noise=1.0)
+    return run_fusion("17 大噪声", s, yt, ekf_kw={"sigma_gyro":0.05,"sigma_mag":0.08})
+
+def ex18_mag_glitch():
+    s,yt = build_segment(15, 2, [0.1,0,0], noise=True, seed=40)
+    nav = InsMagNavigator(DT, MAG_N)
+    yaws_est = []
+    for k,(g,a,m) in enumerate(s):
+        nav.step_imu(g,a,use_acc=(k%2==0))
+        if 500 <= k < 1000:
+            m = m + np.array([15.,15.,15.])
+        if k%5==0: nav.step_mag(m)
+        yaws_est.append(nav.yaw_deg())
+    dy = yaws_est[-1]-yaws_est[0]
+    err = np.array(yaws_est)-np.array(yt); err=(err+180)%360-180
+    rmse = float(np.sqrt(np.mean(err**2)))
+    return {"name":"18 磁干扰","n":len(s),"duration":len(s)*DT,
+            "pos":np.round(nav.p,2).tolist(),"vel":np.round(nav.v,2).tolist(),
+            "yaw_change":round(dy,2),"yaw_true_change":round(yt[-1]-yt[0],2),
+            "yaw_rmse_deg":round(rmse,2),"yaws":yaws_est,
+            "text":_format_result("18 磁干扰5s",len(s),nav.p,nav.v,dy,yt[-1]-yt[0],rmse)}
+
+ALL_FNS = [
+    "ex01_static_5s","ex02_static_30s","ex03_static_noisy",
+    "ex04_turn_slow","ex05_turn_medium","ex06_turn_fast",
+    "ex07_s_turn","ex08_spin_360",
+    "ex09_accel_north","ex10_brake","ex11_cruise","ex12_accel_east",
+    "ex13_turn_and_go","ex14_zigzag","ex15_stop_go","ex16_figure8",
+    "ex17_high_gyro_noise","ex18_mag_glitch",
+]
+
+def run_all_summary():
+    rows = []
+    for fn in ALL_FNS:
+        r = globals()[fn]()
+        rows.append((r["name"], r["duration"], r["yaw_change"],
+                     r.get("yaw_true_change","-"), r.get("yaw_rmse_deg","-"),
+                     r["pos"][0], r["pos"][1]))
+    hdr = f"{'场景':<14} {'时长':>5} {'Δψ估':>7} {'Δψ真':>7} {'RMSE':>6} {'北向m':>8} {'东向m':>8}"
+    sep = "-"*len(hdr)
+    lines = ["【全部18场景汇总】", hdr, sep]
+    for name,dur,dy,dt,rmse,pn,pe in rows:
+        lines.append(f"{name:<14} {dur:5.1f}s {dy:7.2f} {str(dt):>7} {str(rmse):>6} {pn:8.2f} {pe:8.2f}")
+    return "\\n".join(lines) + "\\n"
+`;
+
+    function drawChart(yaws, title) {
+      if (!yaws || yaws.length < 2) return;
+      chartEl.style.display = 'block';
+      chartLabel.style.display = 'block';
+      chartLabel.textContent = '航向曲线：' + title;
+      const ctx = chartEl.getContext('2d');
+      const W = chartEl.width, H = chartEl.height;
+      ctx.clearRect(0, 0, W, H);
+      const pad = { l: 48, r: 16, t: 16, b: 32 };
+      const minY = Math.min(...yaws), maxY = Math.max(...yaws);
+      const span = Math.max(maxY - minY, 1);
+      const x0 = pad.l, y0 = pad.t, w = W - pad.l - pad.r, h = H - pad.t - pad.b;
+      ctx.strokeStyle = '#ccc';
+      ctx.beginPath();
+      ctx.moveTo(x0, y0); ctx.lineTo(x0, y0+h); ctx.lineTo(x0+w, y0+h);
+      ctx.stroke();
+      ctx.strokeStyle = '#0066cc';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < yaws.length; i++) {
+        const x = x0 + (i / (yaws.length - 1)) * w;
+        const y = y0 + h - ((yaws[i] - minY) / span) * h;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#333';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(minY.toFixed(1) + '°', 4, y0 + h);
+      ctx.fillText(maxY.toFixed(1) + '°', 4, y0 + 12);
+      ctx.fillText('0 s', x0, H - 6);
+      ctx.fillText((yaws.length * 0.01).toFixed(1) + ' s', x0 + w - 36, H - 6);
+    }
+
+    function runExample(fn) {
+      logEl.textContent = '';
+      statusEl.textContent = '运行中: ' + fn + ' …';
+      try {
+        const raw = pyodide.runPython(`run_and_json("${fn}")`);
+        const r = JSON.parse(raw);
+        log(r.text);
+        drawChart(r.yaws, r.name);
+        statusEl.textContent = '完成: ' + r.name;
+      } catch (e) {
+        log('错误: ' + e);
+        statusEl.textContent = '运行失败';
+      }
+    }
+
+    function wireButtons() {
+      EXAMPLES.forEach(ex => {
+        const btn = document.createElement('button');
+        btn.textContent = ex.label;
+        btn.disabled = true;
+        btn.id = ex.id;
+        document.getElementById(ex.group).appendChild(btn);
+        btn.onclick = () => runExample(ex.fn);
+      });
+      document.getElementById('btnAll').onclick = () => {
+        logEl.textContent = '';
+        statusEl.textContent = '正在运行全部 18 个场景…';
+        try {
+          log(pyodide.runPython('run_all_summary()'));
+          chartEl.style.display = 'none';
+          chartLabel.style.display = 'none';
+          statusEl.textContent = '全部完成';
+        } catch (e) {
+          log('错误: ' + e);
+        }
+      };
+      document.getElementById('btnClear').onclick = () => {
+        logEl.textContent = '';
+        chartEl.style.display = 'none';
+        chartLabel.style.display = 'none';
+      };
+    }
+
+    async function init() {
+      wireButtons();
+      try {
+        pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/' });
+        await pyodide.loadPackage('numpy');
+        pyodide.runPython(PY);
+        statusEl.textContent = '就绪 — 共 18 个场景，可点「全部运行」查看汇总表';
+        document.querySelectorAll('button').forEach(b => { b.disabled = false; });
+      } catch (e) {
+        statusEl.textContent = '加载失败';
+        log('错误: ' + e.message + '\n\n可改用百度 AI Studio 或本机 Python。');
+      }
+    }
+    init();
+  </script>
+</body>
+</html>
