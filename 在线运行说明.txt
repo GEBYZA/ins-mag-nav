@@ -1,0 +1,33 @@
+【松组合 INS + 全球地磁图 WMM】
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+前提数据：全球地磁模型
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+已内置 NOAA WMM2020 系数: data\WMM2020.COF
+来源: https://www.ncei.noaa.gov/products/world-magnetic-model
+
+更新/生成全球 5° 网格缓存:
+  python -m ins_mag_nav.download_wmm
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+输入
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) 初始: 纬度、经度、海拔、roll/pitch/yaw、vn/ve/vd
+2) 每帧九轴: gx,gy,gz, ax,ay,az, mx,my,mz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+输出
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+末经纬高、末姿态、末速度、末加速度(NED)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+运行
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Python:
+  python -m ins_mag_nav.run_user_example ins_mag_nav\data\mission_example.txt
+
+网页:
+  双击 input_demo.html
+
+百度 AI Studio:
+  上传 INS_Mag_Nav_Colab.ipynb 或本地 Python 工程
