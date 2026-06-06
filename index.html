@@ -472,7 +472,7 @@ def run_fusion_json(payload):
                           dphi[0]/dphi_norm*math.sin(dphi_norm/2),
                           dphi[1]/dphi_norm*math.sin(dphi_norm/2),
                           dphi[2]/dphi_norm*math.sin(dphi_norm/2)])
-            q_nb = dq @ q_nb if hasattr(dq, '__len__') else q_nb * dq[0]
+            q_nb = quat_multiply(dq, q_nb)
             q_nb = q_nb / np.linalg.norm(q_nb)
         
         # Reset error state
