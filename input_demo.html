@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>松组合 INS+地磁图融合</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 20px auto; padding: 0 16px; }
+    h1 { font-size: 1.2rem; }
+    .tip { color: #555; font-size: 13px; line-height: 1.5; }
+    fieldset { margin: 14px 0; border: 1px solid #ccc; border-radius: 8px; padding: 12px; }
+    legend { font-weight: 600; }
+    label { display: inline-block; min-width: 100px; font-size: 13px; }
+    input { width: 96px; margin: 4px 6px 4px 0; }
+    textarea { width: 100%; font-family: Consolas, monospace; font-size: 12px; min-height: 160px; }
+    button { padding: 10px 22px; background: #0066cc; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+    #out { background: #1a1a1a; color: #ddd; padding: 14px; border-radius: 8px; font-family: Consolas, monospace;
+            font-size: 12px; white-space: pre-wrap; min-height: 200px; }
+    #status { color: #0066cc; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>松组合：INS + 地磁图 → 末位置 / 姿态 / 速度 / 加速度</h1>
+  <p class="tip">
+    内置区域地磁图（北京附近，含磁异常）。卡尔曼滤波为<strong>松组合</strong>：惯导递推 + 地磁图矢量匹配更新；
+    含 NIS 门限剔除、自适应观测噪声、场强一致性检查。单位：陀螺 rad/s，加计 m/s²，磁力计 μT。
+  </p>
+  <p id="status">加载 Python…</p>
+
+  <fieldset>
+    <legend>初始状态</legend>
+    <div><label>纬度 °</label><input id="lat" value="39.9042" />
+    <label>经度 °</label><input id="lon" value="116.4074" />
+    <label>海拔 m</label><input id="alt" value="50" /></div>
+    <div><label>roll °</label><input id="roll" value="0" />
+    <label>pitch °</label><input id="pitch" value="0" />
+    <label>yaw °</label><input id="yaw" value="0" /></div>
+    <div><label>vn</label><input id="vn" value="0" />
+    <label>ve</label><input id="ve" value="0" />
+    <label>vd</label><input id="vd" value="0" />
+    <label>dt s</label><input id="dt" value="0.01" /></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>九轴数据（每行 9 个数）</legend>
+    <textarea id="samples">0 0 0  0 0 -9.81  20 0 35
+0 0 0.05236  0 0 -9.81  19.8 0.5 35
+0 0 0.05236  0 0 -9.81  19.2 1.0 35
+0 0 0.05236  0 0 -9.81  18.5 1.5 35
+0 0 0.05236  0 0 -9.81  17.5 2.0 35
+0 0 0.05236  0 0 -9.81  16.5 2.5 35
+0 0 0.05236  0 0 -9.81  15.5 3.0 35
+0 0 0.05236  0 0 -9.81  14.0 3.5 35
+0 0 0.05236  0 0 -9.81  12.5 4.0 35
+0 0 0.05236  0 0 -9.81  11.0 4.5 35</textarea>
+  </fieldset>
+
+  <button id="btnRun" disabled>松组合解算</button>
+  <pre id="out"></pre>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+  <script>
+    const PY = String.raw`
+import numpy as np, json
+
+def asf(x):
+    """Force float64 arrays (Pyodide/JSON ints break v+= operations)."""
+    return np.asarray(x, dtype=np.float64)
+
+def f3(a, b=None, c=None):
+    if b is None:
+        return asf(a)
+    return asf([a, b, c])
+
+# ---------- geodetic ----------
+WGS84_A=6378137.0; WGS84_E2=6.69437999014e-3
+def geodetic_to_ecef(lat,lon,alt):
+    la,lo=np.deg2rad(lat),np.deg2rad(lon)
+    sLA,cLA,sLO,cLO=np.sin(la),np.cos(la),np.sin(lo),np.cos(lo)
+    N=WGS84_A/np.sqrt(1-WGS84_E2*sLA**2)
+    return np.array([(N+alt)*cLA*cLO,(N+alt)*cLA*sLO,(N*(1-WGS84_E2)+alt)*sLA])
+def ecef_to_geodetic(ecef):
+    x,y,z=ecef; lon=np.arctan2(y,x); p=np.hypot(x,y)
+    lat=np.arctan2(z,p*(1-WGS84_E2))
+    for _ in range(8):
+        sLA=np.sin(lat); N=WGS84_A/np.sqrt(1-WGS84_E2*sLA**2)
+        alt=p/np.cos(lat)-N; lat=np.arctan2(z,p*(1-WGS84_E2*N/(N+alt)))
+    sLA=np.sin(lat); N=WGS84_A/np.sqrt(1-WGS84_E2*sLA**2)
+    return float(np.rad2deg(lat)),float(np.arctan2(y,x)*180/np.pi),float(p/np.cos(lat)-N)
+def ned_to_geodetic(ned,lat0,lon0,alt0):
+    ref=geodetic_to_ecef(lat0,lon0,alt0)
+    la0,lo0=np.deg2rad(lat0),np.deg2rad(lon0)
+    sl,cl,so,co=np.sin(la0),np.cos(la0),np.sin(lo0),np.cos(lo0)
+    R=np.array([[-sl*co,-sl*so,cl],[-so,co,0],[-cl*co,-cl*so,-sl]])
+    return ecef_to_geodetic(ref+R.T@np.asarray(ned,float))
+
+# ---------- geomagnetic map ----------
+def build_map(lat0,lon0,span=0.02,step=0.002):
+    lats=np.arange(lat0-span,lat0+span+1e-9,step)
+    lons=np.arange(lon0-span,lon0+span+1e-9,step)
+    inc,dec=np.deg2rad(60),np.deg2rad(-6)
+    base=np.array([np.cos(inc)*np.cos(dec),np.cos(inc)*np.sin(dec),np.sin(inc)])*50
+    F=np.zeros((len(lats),len(lons),3), dtype=np.float64)
+    for i,la in enumerate(lats):
+        for j,lo in enumerate(lons):
+            dn=(la-lat0)*111320; de=(lo-lon0)*111320*np.cos(np.deg2rad(lat0))
+            an=8*(np.sin(dn/400)*np.cos(de/350)+0.5*np.sin(de/200))
+            F[i,j]=base+np.array([an*0.02,an*0.015,an*0.3])
+    return lats,lons,F
+
+class MagMap:
+    def __init__(self,lats,lons,F):
+        self.lats,self.lons,self.F=lats,lons,F
+    def at(self,la,lo):
+        la=float(np.clip(la,self.lats[0],self.lats[-1]))
+        lo=float(np.clip(lo,self.lons[0],self.lons[-1]))
+        i=max(0,min(int(np.searchsorted(self.lats,la)-1),len(self.lats)-2))
+        j=max(0,min(int(np.searchsorted(self.lons,lo)-1),len(self.lons)-2))
+        t=(la-self.lats[i])/(self.lats[i+1]-self.lats[i]+1e-12)
+        u=(lo-self.lons[j])/(self.lons[j+1]-self.lons[j]+1e-12)
+        f00,f01,f10,f11=self.F[i,j],self.F[i,j+1],self.F[i+1,j],self.F[i+1,j+1]
+        return (f00*(1-u)+f01*u)*(1-t)+(f10*(1-u)+f11*u)*t
+    def grad(self,la,lo,alt=0):
+        dlat=max(self.lats[1]-self.lats[0],1e-6)
+        dlon=max(self.lons[1]-self.lons[0],1e-6)
+        rm=6378137+alt; latr=np.deg2rad(la)
+        dn=np.deg2rad(dlat)*rm; de=np.deg2rad(dlon)*rm*max(np.cos(latr),1e-6)
+        G=np.zeros((3,3))
+        G[:,0]=(self.at(la+dlat,lo)-self.at(la-dlat,lo))/(2*dn)
+        G[:,1]=(self.at(la,lo+dlon)-self.at(la,lo-dlon))/(2*de)
+        return G
+
+# ---------- quaternion ----------
+def quat_mul(q,p):
+    w1,x1,y1,z1=q; w2,x2,y2,z2=p
+    return np.array([w1*w2-x1*x2-y1*y2-z1*z2,w1*x2+x1*w2+y1*z2-z1*y2,
+        w1*y2-x1*z2+y1*w2+z1*x2,w1*z2+x1*y2-y1*x2+z1*w2])
+def quat_norm(q):
+    n=np.linalg.norm(q); return q/n if n>1e-12 else np.array([1.,0,0,0])
+def euler_to_q(r,p,y):
+    cr,sr=np.cos(r/2),np.sin(r/2); cp,sp=np.cos(p/2),np.sin(p/2)
+    cy,sy=np.cos(y/2),np.sin(y/2)
+    return quat_norm(np.array([cr*cp*cy+sr*sp*sy,sr*cp*cy-cr*sp*sy,cr*sp*cy+sr*cp*sy,cr*cp*sy-sr*sp*cy]))
+def q2C(q):
+    w,x,y,z=quat_norm(q)
+    return np.array([[1-2*(y*y+z*z),2*(x*y-w*z),2*(x*z+w*y)],[2*(x*y+w*z),1-2*(x*x+z*z),2*(y*z-w*x)],[2*(x*z-w*y),2*(y*z+w*x),1-2*(x*x+y*y)]])
+def q2euler(q):
+    C=q2C(q)
+    return np.arctan2(C[2,1],C[2,2]),-np.arcsin(np.clip(C[2,0],-1,1)),np.arctan2(C[1,0],C[0,0])
+def skew(v):
+    x,y,z=v; return np.array([[0,-z,y],[z,0,-x],[-y,x,0]],float)
+def integ_q(q,g,dt):
+    w=np.linalg.norm(g)
+    if w<1e-12: return quat_norm(q)
+    ha=0.5*w*dt; s=np.sin(ha)/w
+    dq=np.array([np.cos(ha),g[0]*s,g[1]*s,g[2]*s])
+    return quat_norm(quat_mul(q,dq))
+
+N=15
+class LooseEKF:
+    def __init__(self,dt,mp,lat0,lon0,alt0):
+        self.dt=dt; self.mp=mp; self.lat0=lat0; self.lon0=lon0; self.alt0=alt0
+        self.p=f3(0,0,0); self.v=f3(0,0,0); self.q=asf([1.,0.,0.,0.])
+        self.bg=f3(0,0,0); self.ba=f3(0,0,0); self.an=f3(0,0,0)
+        self.dx=np.zeros(N, dtype=np.float64); self.P=np.diag([1,1,2,.1,.1,.1,.05,.05,.1]+[1e-4]*3+[1e-3]*3).astype(np.float64)
+        self.Q=np.zeros((N,N)); self.Q[6:9,6:9]=np.eye(3)*2.25e-4*dt
+        self.Q[9:12,9:12]=np.eye(3)*1e-8*dt; self.Q[12:15,12:15]=np.eye(3)*1e-8*dt
+        self.Ra=np.eye(3)*0.0625; self.Rm=np.eye(3)*0.64
+        self.gate=11.34; self.st={'ok':0,'rej':0}
+    def ll(self):
+        return ned_to_geodetic(self.p,self.lat0,self.lon0,self.alt0)[:2]
+    def inj(self):
+        self.p=self.p+asf(self.dx[0:3]); self.v=self.v+asf(self.dx[3:6])
+        d=self.dx[6:9]; th=np.linalg.norm(d)
+        if th>1e-12:
+            s=np.sin(th/2)/th*2; self.q=quat_norm(quat_mul(self.q,np.array([np.cos(th/2),d[0]*s/2,d[1]*s/2,d[2]*s/2])))
+        self.bg=self.bg+asf(self.dx[9:12]); self.ba=self.ba+asf(self.dx[12:15]); self.dx[:] = 0.0
+    def upd(self,y,H,R):
+        S=H@self.P@H.T+R
+        nis=float(y.T@np.linalg.solve(S,y))
+        if nis>self.gate: return False
+        R=R*min(8,max(1,nis/3))
+        S=H@self.P@H.T+R; K=self.P@H.T@np.linalg.inv(S)
+        self.dx=self.dx+asf(K@y); I=np.eye(N); self.P=(I-K@H)@self.P@(I-K@H).T+K@R@K.T
+        self.inj(); return True
+    def pred(self,gyro,acc):
+        gyro=asf(gyro); acc=asf(acc)
+        dt=float(self.dt); w=gyro-self.bg
+        self.q=integ_q(self.q,w,dt); C=q2C(self.q)
+        fb=acc-self.ba; self.an=C@fb+asf([0.,0.,9.81])
+        self.v=self.v+self.an*dt; self.p=self.p+self.v*dt
+        F=np.eye(N); F[0:3,3:6]=np.eye(3)*dt; F[6:9,6:9]-=skew(w)*dt; F[6:9,9:12]=-np.eye(3)*dt
+        F[3:6,6:9]=-skew(C@fb)*dt; F[3:6,12:15]=-C*dt
+        self.P=F@self.P@F.T+self.Q
+    def upd_acc(self,acc):
+        if abs(np.linalg.norm(acc)-9.81)>2.5: return
+        C=q2C(self.q); h=C.T@np.array([0,0,-1.]); h/=np.linalg.norm(h)
+        z=acc/np.linalg.norm(acc); y=z-h
+        H=np.zeros((3,N)); H[:,6:9]=skew(h); H[:,12:15]=np.eye(3)
+        self.upd(y,H,self.Ra)
+    def upd_mag(self,m):
+        mn=np.linalg.norm(m)
+        if mn<1: return
+        la,lo=self.ll(); Bn=self.mp.at(la,lo); bn=np.linalg.norm(Bn)
+        if bn<1 or abs(mn-bn)/bn>0.4: self.st['rej']+=1; return
+        C=q2C(self.q); h=C.T@Bn; y=m-h
+        G=self.mp.grad(la,lo,self.alt0)
+        latr=np.deg2rad(la); rm=6378137+self.alt0
+        J=np.column_stack([G[:,0]*180/(np.pi*rm),G[:,1]*180/(np.pi*rm*np.cos(latr)),np.zeros(3)])
+        H=np.zeros((3,N)); H[:,6:9]=-skew(h); H[:,0:3]=C.T@J
+        if self.upd(y,H,self.Rm): self.st['ok']+=1
+        else: self.st['rej']+=1
+
+def run_fusion_json(s):
+    d=json.loads(s)
+    init,rows=d['init'],d['rows']
+    lat0,lon0,alt0=float(init['lat']),float(init['lon']),float(init['alt'])
+    lats,lons,F=build_map(lat0,lon0)
+    mp=MagMap(lats,lons,F)
+    ekf=LooseEKF(float(init['dt']),mp,lat0,lon0,alt0)
+    ekf.q=euler_to_q(np.deg2rad(init['roll']),np.deg2rad(init['pitch']),np.deg2rad(init['yaw']))
+    ekf.v=asf([init['vn'],init['ve'],init['vd']])
+    for i,r in enumerate(rows):
+        r=asf(r)
+        g=r[:3]; a=r[3:6]; m=r[6:9]
+        ekf.pred(g,a)
+        if i%2==0: ekf.upd_acc(a)
+        ekf.upd_mag(m)
+    la,lo,al=ned_to_geodetic(ekf.p,lat0,lon0,alt0)
+    ro,pi,yw=q2euler(ekf.q)
+    return json.dumps({
+        'latitude_deg':la,'longitude_deg':lo,'altitude_m':al,
+        'roll_deg':float(np.rad2deg(ro)),'pitch_deg':float(np.rad2deg(pi)),'yaw_deg':float(np.rad2deg(yw)),
+        'velocity_north_mps':float(ekf.v[0]),'velocity_east_mps':float(ekf.v[1]),'velocity_down_mps':float(ekf.v[2]),
+        'accel_north_mps2':float(ekf.an[0]),'accel_east_mps2':float(ekf.an[1]),'accel_down_mps2':float(ekf.an[2]),
+        'position_north_m':float(ekf.p[0]),'position_east_m':float(ekf.p[1]),'position_down_m':float(ekf.p[2]),
+        'mag_accept':ekf.st['ok'],'mag_reject':ekf.st['rej'],'num_samples':len(rows)
+    })
+`;
+
+    let pyodide;
+    async function init() {
+      try {
+        pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/' });
+        await pyodide.loadPackage('numpy');
+        pyodide.runPython(PY);
+        document.getElementById('status').textContent = '就绪（松组合 + 地磁图已加载）';
+        document.getElementById('btnRun').disabled = false;
+      } catch (e) {
+        document.getElementById('status').textContent = '加载失败: ' + e.message;
+      }
+    }
+
+    document.getElementById('btnRun').onclick = () => {
+      const rows = [];
+      for (const line of document.getElementById('samples').value.split('\n')) {
+        const s = line.replace(/#.*/,'').trim();
+        if (!s) continue;
+        const p = s.split(/[,\s]+/).map(Number);
+        if (p.length >= 9) rows.push(p.slice(0,9));
+      }
+      if (!rows.length) { document.getElementById('out').textContent = '请至少一行九轴数据'; return; }
+      const payload = JSON.stringify({
+        init: {
+          lat: +document.getElementById('lat').value,
+          lon: +document.getElementById('lon').value,
+          alt: +document.getElementById('alt').value,
+          roll: +document.getElementById('roll').value,
+          pitch: +document.getElementById('pitch').value,
+          yaw: +document.getElementById('yaw').value,
+          vn: +document.getElementById('vn').value,
+          ve: +document.getElementById('ve').value,
+          vd: +document.getElementById('vd').value,
+          dt: +document.getElementById('dt').value,
+        },
+        rows
+      });
+      try {
+        const raw = pyodide.runPython(`run_fusion_json(${JSON.stringify(payload)})`);
+        const r = JSON.parse(raw);
+        document.getElementById('out').textContent =
+`【末状态】松组合 EKF  样本 ${r.num_samples}  地磁更新 接受${r.mag_accept} 拒绝${r.mag_reject}
+
+位置:
+  纬度  ${r.latitude_deg.toFixed(8)} °
+  经度  ${r.longitude_deg.toFixed(8)} °
+  海拔  ${r.altitude_m.toFixed(3)} m
+  NED位移  北${r.position_north_m.toFixed(4)}  东${r.position_east_m.toFixed(4)}  地${r.position_down_m.toFixed(4)} m
+
+姿态 (deg):
+  roll ${r.roll_deg.toFixed(3)}   pitch ${r.pitch_deg.toFixed(3)}   yaw ${r.yaw_deg.toFixed(3)}
+
+速度 (m/s):
+  vn ${r.velocity_north_mps.toFixed(4)}   ve ${r.velocity_east_mps.toFixed(4)}   vd ${r.velocity_down_mps.toFixed(4)}
+
+加速度 (m/s², 导航系):
+  an ${r.accel_north_mps2.toFixed(4)}   ae ${r.accel_east_mps2.toFixed(4)}   ad ${r.accel_down_mps2.toFixed(4)}`;
+      } catch (e) {
+        document.getElementById('out').textContent = '错误: ' + e;
+      }
+    };
+    init();
+  </script>
+</body>
+</html>
