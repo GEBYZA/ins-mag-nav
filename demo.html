@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INS + 地磁融合导航在线演示</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);color:#fff;padding:20px 0;text-align:center}
+.header h1{font-size:1.5rem;font-weight:600;letter-spacing:1px}
+.header p{font-size:0.85rem;opacity:0.75;margin-top:4px}
+.container{max-width:1100px;margin:0 auto;padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:860px){.container{grid-template-columns:1fr}}
+.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,0.06)}
+.card h2{font-size:1.05rem;color:#0f3460;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #e8ecf1}
+.form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.form-row label{font-size:0.8rem;color:#555;min-width:48px;line-height:2}
+.form-row input{width:72px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;text-align:center}
+.form-row input:focus{outline:none;border-color:#0f3460;box-shadow:0 0 0 2px rgba(15,52,96,0.1)}
+textarea{width:100%;height:200px;font-family:'Consolas','Courier New',monospace;font-size:0.75rem;padding:10px;border:1px solid #ddd;border-radius:8px;resize:vertical;background:#fafbfc;line-height:1.6}
+textarea:focus{outline:none;border-color:#0f3460}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 24px;font-size:0.95rem;font-weight:600;border:none;border-radius:8px;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:linear-gradient(135deg,#0f3460,#1a5276);color:#fff}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(15,52,96,0.3)}
+.btn-secondary{background:#e8ecf1;color:#333;margin-left:8px}
+.btn-secondary:hover{background:#dde1e7}
+.btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.result-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.result-box{background:#f8f9fb;border-radius:8px;padding:12px;border:1px solid #e8ecf1}
+.result-box h3{font-size:0.8rem;color:#0f3460;margin-bottom:6px;font-weight:600}
+.result-box .val{font-size:1.2rem;font-weight:700;color:#1a1a2e}
+.result-box .unit{font-size:0.7rem;color:#888;font-weight:400}
+.compare-row{display:flex;gap:16px;margin-top:12px}
+.compare-col{flex:1;background:#fff;border-radius:8px;padding:12px;border:1px solid #e8ecf1}
+.compare-col h4{font-size:0.82rem;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #eee}
+.compare-col.ins h4{color:#d14836}
+.compare-col.fusion h4{color:#0f7a3a}
+.compare-col .item{display:flex;justify-content:space-between;font-size:0.8rem;padding:3px 0}
+.compare-col .item span:last-child{font-weight:600}
+.status-bar{padding:8px 16px;background:#fff;border-radius:8px;font-size:0.8rem;color:#666;margin-bottom:12px;border:1px solid #e8ecf1}
+.status-bar .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.status-bar .dot.ok{background:#22c55e}
+.status-bar .dot.wait{background:#f59e0b;animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.chart-container{margin-top:12px}
+canvas{width:100%;border-radius:8px;background:#fafbfc}
+.tip{font-size:0.78rem;color:#888;margin-top:8px;line-height:1.5}
+.tab-bar{display:flex;gap:0;margin-bottom:0}
+.tab-btn{padding:8px 18px;border:none;background:#e8ecf1;color:#555;font-size:0.82rem;cursor:pointer;border-radius:8px 8px 0 0;transition:all 0.15s;font-weight:500}
+.tab-btn.active{background:#fff;color:#0f3460;font-weight:700;box-shadow:0 -2px 8px rgba(0,0,0,0.04)}
+.tab-content{display:none;background:#fff;border-radius:0 0 12px 12px;padding:16px;border:1px solid #e8ecf1;border-top:none}
+.tab-content.active{display:block}
+.stat-num{font-size:2rem;font-weight:800;color:#0f3460}
+.stat-label{font-size:0.75rem;color:#888}
+.stats-row{display:flex;gap:20px;margin-top:8px}
+.stat-item{text-align:center}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>INS + 地磁融合导航 · 在线演示</h1>
+  <p>松组合扩展卡尔曼滤波 | 内置区域地磁图 | WMM 全球模型 | 鲁棒性多层检测</p>
+</div>
+
+<div class="container">
+  <!-- Left: Input -->
+  <div class="card">
+    <h2>📥 参数设置与数据输入</h2>
+    <div class="form-row">
+      <label>纬度°</label><input id="lat" value="39.9042">
+      <label>经度°</label><input id="lon" value="116.4074">
+      <label>海拔m</label><input id="alt" value="50">
+    </div>
+    <div class="form-row">
+      <label>Roll°</label><input id="roll" value="0">
+      <label>Pitch°</label><input id="pitch" value="0">
+      <label>Yaw°</label><input id="yaw" value="0">
+    </div>
+    <div class="form-row">
+      <label>Vn</label><input id="vn" value="0">
+      <label>Ve</label><input id="ve" value="0">
+      <label>Vd</label><input id="vd" value="0">
+      <label>Δt s</label><input id="dt" value="0.01">
+    </div>
+    <p style="font-size:0.78rem;color:#888;margin:8px 0">九轴数据（每行：gx gy gz &nbsp; ax ay az &nbsp; mx my mz）</p>
+    <textarea id="samples">0 0 0  0 0 -9.81  20 0 35
+0 0 0.05236  0 0 -9.81  19.8 0.5 35
+0 0 0.05236  0 0 -9.81  19.2 1.0 35
+0 0 0.05236  0 0 -9.81  18.5 1.5 35
+0 0 0.05236  0 0 -9.81  17.5 2.0 35
+0 0 0.05236  0 0 -9.81  16.5 2.5 35
+0 0 0.05236  0 0 -9.81  15.5 3.0 35
+0 0 0.05236  0 0 -9.81  14.0 3.5 35
+0 0 0.05236  0 0 -9.81  12.5 4.0 35
+0 0 0.05236  0 0 -9.81  11.0 4.5 35
+0 0 0.05236  0 0 -9.81  9.5 5.0 35
+0 0 0.05236  0 0 -9.81  8.0 5.5 35
+0 0 0.05236  0 0 -9.81  6.5 6.0 35
+0 0 0.05236  0 0 -9.81  5.0 6.5 35
+0 0 0.05236  0 0 -9.81  3.5 7.0 35
+0 0 0.05236  0 0 -9.81  2.0 7.5 35
+0 0 0.05236  0 0 -9.81  0.5 8.0 35
+0 0 0.05236  0 0 -9.81  -1.0 8.5 35
+0 0 0.05236  0 0 -9.81  -2.5 9.0 35
+0 0 0.05236  0 0 -9.81  -4.0 9.5 35</textarea>
+    <div style="margin-top:12px">
+      <button class="btn btn-primary" id="btnRun" disabled>
+        <span>▶</span> 松组合解算
+      </button>
+      <button class="btn btn-secondary" id="btnReset">↻ 恢复示例</button>
+    </div>
+    <div class="status-bar" style="margin-top:12px">
+      <span id="statusDot" class="dot wait"></span>
+      <span id="statusText">正在加载 Python 运行环境…</span>
+    </div>
+  </div>
+
+  <!-- Right: Results -->
+  <div class="card">
+    <h2>📊 解算结果</h2>
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="summary">对比摘要</button>
+      <button class="tab-btn" data-tab="traj">航向轨迹</button>
+      <button class="tab-btn" data-tab="detail">详细输出</button>
+    </div>
+    <div class="tab-content active" id="tab-summary">
+      <div class="stats-row">
+        <div class="stat-item"><div class="stat-label">处理帧数</div><div class="stat-num" id="statFrames">-</div></div>
+        <div class="stat-item"><div class="stat-label">地磁接受</div><div class="stat-num" id="statAccept" style="color:#22c55e">-</div></div>
+        <div class="stat-item"><div class="stat-label">地磁拒绝</div><div class="stat-num" id="statReject" style="color:#d14836">-</div></div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-col ins">
+          <h4>纯 INS 推算</h4>
+          <div class="item"><span>纬度</span><span id="insLat">-</span></div>
+          <div class="item"><span>经度</span><span id="insLon">-</span></div>
+          <div class="item"><span>偏航角</span><span id="insYaw">-</span></div>
+          <div class="item"><span>北向速度</span><span id="insVn">-</span></div>
+        </div>
+        <div class="compare-col fusion">
+          <h4>融合 EKF（本发明）</h4>
+          <div class="item"><span>纬度</span><span id="ekfLat">-</span></div>
+          <div class="item"><span>经度</span><span id="ekfLon">-</span></div>
+          <div class="item"><span>偏航角</span><span id="ekfYaw">-</span></div>
+          <div class="item"><span>北向速度</span><span id="ekfVn">-</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-content" id="tab-traj">
+      <div class="chart-container">
+        <canvas id="chartYaw" height="220"></canvas>
+        <p class="tip">航向对比（蓝色=纯INS漂移，绿色=EKF融合校正）</p>
+      </div>
+      <div class="chart-container" style="margin-top:12px">
+        <canvas id="chartPos" height="220"></canvas>
+        <p class="tip">水平轨迹对比</p>
+      </div>
+    </div>
+    <div class="tab-content" id="tab-detail">
+      <pre id="detailOut" style="background:#1a1a2e;color:#a8d8a8;padding:14px;border-radius:8px;font-size:0.73rem;line-height:1.5;min-height:300px;white-space:pre-wrap">运行后将在此显示完整输出…</pre>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+// ===== Tab切换 =====
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'traj' && window._chartData) drawCharts();
+  });
+});
+
+// ===== Python算法（完整内嵌） =====
+const PY_CODE = String.raw`
+import numpy as np, json, math
+
+def asf(x):
+    return np.asarray(x, dtype=np.float64)
+
+def f3(a, b=None, c=None):
+    if b is None: return asf(a)
+    return asf([a, b, c])
+
+# ---------- geodetic ----------
+WGS84_A = 6378137.0
+WGS84_E2 = 6.69437999014e-3
+
+def geodetic_to_ecef(lat, lon, alt):
+    la, lo = math.radians(lat), math.radians(lon)
+    sLA, cLA = math.sin(la), math.cos(la)
+    sLO, cLO = math.sin(lo), math.cos(lo)
+    N = WGS84_A / math.sqrt(1 - WGS84_E2 * sLA**2)
+    return np.array([(N+alt)*cLA*cLO, (N+alt)*cLA*sLO, (N*(1-WGS84_E2)+alt)*sLA])
+
+def ecef_to_geodetic(ecef):
+    x, y, z = ecef
+    lon = math.atan2(y, x)
+    p = math.hypot(x, y)
+    lat = math.atan2(z, p*(1-WGS84_E2))
+    for _ in range(8):
+        sLA = math.sin(lat)
+        N = WGS84_A / math.sqrt(1 - WGS84_E2*sLA**2)
+        alt = p/math.cos(lat) - N
+        lat = math.atan2(z, p*(1-WGS84_E2*N/(N+alt)))
+    sLA = math.sin(lat)
+    N = WGS84_A / math.sqrt(1-WGS84_E2*sLA**2)
+    return math.degrees(lat), math.degrees(lon), p/math.cos(lat)-N
+
+def ned_to_geodetic(ned, lat0, lon0, alt0):
+    ref = geodetic_to_ecef(lat0, lon0, alt0)
+    la0, lo0 = math.radians(lat0), math.radians(lon0)
+    sl, cl = math.sin(la0), math.cos(la0)
+    so, co = math.sin(lo0), math.cos(lo0)
+    R = np.array([[-sl*co, -sl*so, cl], [-so, co, 0], [-cl*co, -cl*so, -sl]])
+    return ecef_to_geodetic(ref + R.T @ np.asarray(ned, float))
+
+# ---------- WMM simplified (dipole model) ----------
+def wmm_mag_vector(lat, lon, alt):
+    """Simplified WMM: tilted dipole + regional anomalies near Beijing"""
+    la, lo = math.radians(lat), math.radians(lon)
+    # Main dipole (tilted ~10 deg)
+    colat = math.pi/2 - la + 0.18 * math.cos(lo + 1.2)
+    B0 = 50000  # nT
+    Br = -2 * B0 * math.cos(colat)
+    Bt = -B0 * math.sin(colat)
+    # Convert to NED
+    Bn = -Bt
+    Be = 0
+    Bd = -Br
+    # Rotate by declination ~ -6 deg
+    dec = math.radians(-6)
+    Bn2 = Bn*math.cos(dec) - Be*math.sin(dec)
+    Be2 = Bn*math.sin(dec) + Be*math.cos(dec)
+    # Regional anomaly (Beijing area, ~nT level)
+    dn_km = (lat - 39.9042) * 111.32
+    de_km = (lon - 116.4074) * 111.32 * math.cos(math.radians(39.9042))
+    anom = 80 * math.sin(dn_km/0.8) * math.cos(de_km/0.7) + 50 * math.sin(de_km/0.5)
+    return np.array([Bn2 + anom*0.3, Be2 + anom*0.2, Bd + anom*0.5], dtype=np.float64)
+
+# ---------- Magnetic Map (grid, for grad) ----------
+class MagMap:
+    def __init__(self, lat0, lon0, span=0.015, step=0.002):
+        self.lats = np.arange(lat0-span, lat0+span+1e-9, step)
+        self.lons = np.arange(lon0-span, lon0+span+1e-9, step)
+        self.F = np.zeros((len(self.lats), len(self.lons), 3))
+        for i, la in enumerate(self.lats):
+            for j, lo in enumerate(self.lons):
+                self.F[i,j] = wmm_mag_vector(la, lo, 50)
+    def at(self, la, lo):
+        la = float(np.clip(la, self.lats[0], self.lats[-1]))
+        lo = float(np.clip(lo, self.lons[0], self.lons[-1]))
+        i = max(0, min(int(np.searchsorted(self.lats, la)-1), len(self.lats)-2))
+        j = max(0, min(int(np.searchsorted(self.lons, lo)-1), len(self.lons)-2))
+        t = (la-self.lats[i])/(self.lats[i+1]-self.lats[i]+1e-12)
+        u = (lo-self.lons[j])/(self.lons[j+1]-self.lons[j]+1e-12)
+        f00,f01,f10,f11 = self.F[i,j],self.F[i,j+1],self.F[i+1,j],self.F[i+1,j+1]
+        return (f00*(1-u)+f01*u)*(1-t) + (f10*(1-u)+f11*u)*t
+    def grad(self, la, lo, alt=0):
+        dlat = max(self.lats[1]-self.lats[0], 1e-6)
+        dlon = max(self.lons[1]-self.lons[0], 1e-6)
+        rm = 6378137+alt
+        latr = math.radians(la)
+        dn = math.radians(dlat)*rm
+        de = math.radians(dlon)*rm*max(math.cos(latr), 1e-6)
+        G = np.zeros((3,3))
+        G[:,0] = (self.at(la+dlat, lo)-self.at(la-dlat, lo))/(2*dn)
+        G[:,1] = (self.at(la, lo+dlon)-self.at(la, lo-dlon))/(2*de)
+        return G
+
+# ---------- Strapdown ----------
+def strapdown_step(lat, lon, alt, v_ned, q_nb, gyro, accel, dt):
+    la = math.radians(lat)
+    # Attitude update
+    wx, wy, wz = gyro
+    Omega = np.array([[0, -wx, -wy, -wz],[wx, 0, wz, -wy],[wy, -wz, 0, wx],[wz, wy, -wx, 0]], dtype=np.float64)
+    q_dot = 0.5 * Omega @ q_nb
+    q_new = q_nb + q_dot * dt
+    q_new = q_new / np.linalg.norm(q_new)
+    # DCM
+    q0,q1,q2,q3 = q_new
+    Cbn = np.array([
+        [q0*q0+q1*q1-q2*q2-q3*q3, 2*(q1*q2-q0*q3), 2*(q1*q3+q0*q2)],
+        [2*(q1*q2+q0*q3), q0*q0-q1*q1+q2*q2-q3*q3, 2*(q2*q3-q0*q1)],
+        [2*(q1*q3-q0*q2), 2*(q2*q3+q0*q1), q0*q0-q1*q1-q2*q2+q3*q3]
+    ])
+    # Gravity
+    sL = math.sin(la)
+    g0 = 9.7803253359 * (1+0.001931853*math.sin(la)**2) / math.sqrt(1-WGS84_E2*math.sin(la)**2)
+    g_n = np.array([0, 0, g0])
+    # Acceleration in nav frame
+    a_n = Cbn @ accel - g_n
+    v_new = v_ned + a_n * dt
+    # Position
+    Rn = WGS84_A / math.sqrt(1-WGS84_E2*sL**2) + alt
+    Re = (WGS84_A / math.sqrt(1-WGS84_E2*sL**2) + alt) * math.cos(la)
+    lat_new = lat + math.degrees(v_new[0]*dt/Rn)
+    lon_new = lon + math.degrees(v_new[1]*dt/Re) if Re > 0 else lon
+    alt_new = alt - v_new[2]*dt
+    return lat_new, lon_new, alt_new, v_new, q_new, Cbn
+
+def quat_to_euler(q):
+    q0,q1,q2,q3 = q
+    roll = math.degrees(math.atan2(2*(q0*q1+q2*q3), 1-2*(q1*q1+q2*q2)))
+    pitch = math.degrees(math.asin(2*(q0*q2-q3*q1)))
+    yaw = math.degrees(math.atan2(2*(q0*q3+q1*q2), 1-2*(q2*q2+q3*q3)))
+    return roll, pitch, yaw
+
+# ---------- Loose-coupled EKF (15-state) ----------
+def run_fusion_json(payload):
+    init = payload['init']
+    rows = payload['rows']
+    
+    lat, lon, alt = init['lat'], init['lon'], init['alt']
+    vn, ve, vd = init['vn'], init['ve'], init['vd']
+    dt = init['dt']
+    
+    # Init quaternion from roll/pitch/yaw
+    r0,p0,y0 = math.radians(init.get('roll',0)), math.radians(init.get('pitch',0)), math.radians(init.get('yaw',0))
+    cr,cp,cy = math.cos(r0/2), math.cos(p0/2), math.cos(y0/2)
+    sr,sp,sy = math.sin(r0/2), math.sin(p0/2), math.sin(y0/2)
+    q_nb = np.array([cr*cp*cy+sr*sp*sy, sr*cp*cy-cr*sp*sy, cr*sp*cy+sr*cp*sy, cr*cp*sy-sr*sp*cy])
+    
+    v_ned = np.array([vn, ve, vd], dtype=np.float64)
+    
+    # EKF state: [pos_err(3), vel_err(3), att_err(3), gyro_bias(3), accel_bias(3)]
+    x = np.zeros(15, dtype=np.float64)
+    P = np.eye(15) * 0.1
+    P[0:3,0:3] *= 1.0
+    P[3:6,3:6] *= 0.01
+    P[6:9,6:9] *= 1e-4
+    P[9:12,9:12] *= 1e-6
+    P[12:15,12:15] *= 1e-4
+    
+    Q = np.eye(15) * 1e-4
+    Q[9:12,9:12] = np.eye(3)*1e-8
+    Q[12:15,12:15] = np.eye(3)*1e-5
+    
+    # Mag map
+    mag_map = MagMap(lat, lon)
+    
+    # INS-only for comparison
+    lat_ins, lon_ins, alt_ins = lat, lon, alt
+    v_ins = v_ned.copy()
+    q_ins = q_nb.copy()
+    
+    mag_accept = 0
+    mag_reject = 0
+    
+    history_ins = []
+    history_fusion = []
+    
+    for row in rows:
+        gyro = np.array(row[0:3])    # rad/s
+        accel = np.array(row[3:6])   # m/s^2
+        mag = np.array(row[6:9])     # nT (in body frame)
+        
+        # === INS-only propagation ===
+        lat_ins, lon_ins, alt_ins, v_ins, q_ins, _ = strapdown_step(
+            lat_ins, lon_ins, alt_ins, v_ins, q_ins, gyro, accel, dt)
+        _, _, yaw_ins = quat_to_euler(q_ins)
+        
+        # === Fusion: strapdown ===
+        lat, lon, alt, v_ned, q_nb, Cbn = strapdown_step(
+            lat, lon, alt, v_ned, q_nb, gyro, accel, dt)
+        
+        # EKF predict
+        F = np.eye(15)
+        F[0:3,3:6] = np.eye(3)*dt
+        la = math.radians(lat)
+        sL = math.sin(la)
+        Rn = WGS84_A/math.sqrt(1-WGS84_E2*sL**2)+alt
+        Re = (WGS84_A/math.sqrt(1-WGS84_E2*sL**2)+alt)*math.cos(la)
+        
+        # Velocity coupling
+        F[3:6,6:9] = -np.array([
+            [0, -accel[2], accel[1]],
+            [accel[2], 0, -accel[0]],
+            [-accel[1], accel[0], 0]
+        ])*dt
+        
+        P = F @ P @ F.T + Q
+        
+        # Mag observation
+        mag_ref = mag_map.at(lat, lon)
+        mag_pred = Cbn.T @ mag_ref  # expected body-frame mag
+        
+        # Field strength check
+        mag_strength = np.linalg.norm(mag)
+        ref_strength = np.linalg.norm(mag_ref)
+        strength_ratio = abs(mag_strength - ref_strength) / max(ref_strength, 1)
+        
+        if strength_ratio < 0.3:  # within 30%
+            # Mag observation matrix (attitude error -> mag residual)
+            H_mag = np.zeros((3, 15))
+            H_mag[0:3, 6:9] = np.array([
+                [0, -mag_pred[2], mag_pred[1]],
+                [mag_pred[2], 0, -mag_pred[0]],
+                [-mag_pred[1], mag_pred[0], 0]
+            ])
+            
+            R_mag = np.eye(3) * 25.0  # (nT)^2
+            z_mag = mag - mag_pred
+            
+            # NIS check
+            S = H_mag @ P @ H_mag.T + R_mag
+            nis = z_mag @ np.linalg.inv(S) @ z_mag
+            chi_thresh = 7.815  # 95% for 3 DOF
+            
+            if nis < chi_thresh * 2:
+                # Huber-like: inflate R if NIS large
+                if nis > chi_thresh:
+                    R_mag *= (nis / chi_thresh)
+                
+                K = P @ H_mag.T @ np.linalg.inv(H_mag @ P @ H_mag.T + R_mag)
+                dx = K @ z_mag
+                x += dx
+                P = (np.eye(15) - K @ H_mag) @ P
+                mag_accept += 1
+            else:
+                mag_reject += 1
+        else:
+            mag_reject += 1
+        
+        # Accel observation (low dynamics: attitude constraint)
+        accel_norm = np.linalg.norm(accel)
+        g_local = 9.81
+        if abs(accel_norm - g_local) < 1.0:
+            # Expected accel in body frame: Cnb * [0, 0, g]
+            accel_pred = Cbn.T @ np.array([0, 0, g_local])
+            H_acc = np.zeros((3, 15))
+            H_acc[0:3, 6:9] = np.array([
+                [0, -accel_pred[2], accel_pred[1]],
+                [accel_pred[2], 0, -accel_pred[0]],
+                [-accel_pred[1], accel_pred[0], 0]
+            ])
+            R_acc = np.eye(3) * 0.5
+            z_acc = accel - accel_pred
+            K = P @ H_acc.T @ np.linalg.inv(H_acc @ P @ H_acc.T + R_acc)
+            dx = K @ z_acc
+            x += dx
+            P = (np.eye(15) - K @ H_acc) @ P
+        
+        # Feedback correction
+        lat += x[0] * dt / Rn * 180/math.pi
+        lon += x[1] * dt / Re * 180/math.pi if Re > 0 else 0
+        alt -= x[2] * dt
+        v_ned[0] += x[3] * dt
+        v_ned[1] += x[4] * dt
+        v_ned[2] += x[5] * dt
+        
+        # Attitude correction
+        dphi = np.array([x[6], x[7], x[8]]) * dt
+        dphi_norm = np.linalg.norm(dphi)
+        if dphi_norm > 1e-12:
+            dq = np.array([math.cos(dphi_norm/2), 
+                          dphi[0]/dphi_norm*math.sin(dphi_norm/2),
+                          dphi[1]/dphi_norm*math.sin(dphi_norm/2),
+                          dphi[2]/dphi_norm*math.sin(dphi_norm/2)])
+            q_nb = dq @ q_nb if hasattr(dq, '__len__') else q_nb * dq[0]
+            q_nb = q_nb / np.linalg.norm(q_nb)
+        
+        # Reset error state
+        x[:9] *= 0
+        
+        _, _, yaw_fusion = quat_to_euler(q_nb)
+        
+        history_ins.append([lat_ins, lon_ins, yaw_ins])
+        history_fusion.append([lat, lon, yaw_fusion])
+    
+    # Final result
+    roll, pitch, yaw = quat_to_euler(q_nb)
+    _, _, yaw_ins_final = quat_to_euler(q_ins)
+    
+    return json.dumps({
+        'num_samples': len(rows),
+        'mag_accept': mag_accept,
+        'mag_reject': mag_reject,
+        'latitude_deg': lat,
+        'longitude_deg': lon,
+        'altitude_m': alt,
+        'roll_deg': roll,
+        'pitch_deg': pitch,
+        'yaw_deg': yaw,
+        'velocity_north_mps': float(v_ned[0]),
+        'velocity_east_mps': float(v_ned[1]),
+        'velocity_down_mps': float(v_ned[2]),
+        # INS-only final
+        'ins_latitude_deg': lat_ins,
+        'ins_longitude_deg': lon_ins,
+        'ins_yaw_deg': yaw_ins_final,
+        'ins_vn': float(v_ins[0]),
+        'ins_ve': float(v_ins[1]),
+        # History for charts
+        'history_ins': history_ins,
+        'history_fusion': history_fusion
+    })
+`;
+
+// ===== Pyodide Init =====
+let pyodide = null;
+const defaultSamples = document.getElementById('samples').value;
+
+async function init() {
+  pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/" });
+  await pyodide.loadPackage("numpy");
+  pyodide.runPython(PY_CODE);
+  document.getElementById('statusDot').className = 'dot ok';
+  document.getElementById('statusText').textContent = 'Python 环境就绪，可以开始解算';
+  document.getElementById('btnRun').disabled = false;
+}
+
+document.getElementById('btnRun').addEventListener('click', async () => {
+  if (!pyodide) return;
+  const btn = document.getElementById('btnRun');
+  btn.disabled = true;
+  btn.innerHTML = '<span>⏳</span> 计算中…';
+  document.getElementById('statusText').textContent = '正在执行融合解算…';
+  document.getElementById('statusDot').className = 'dot wait';
+
+  // Parse samples
+  const raw = document.getElementById('samples').value.trim();
+  const rows = raw.split('\n').filter(l => l.trim()).map(line => {
+    return line.trim().split(/\s+/).map(Number);
+  });
+
+  const payload = {
+    init: {
+      lat: +document.getElementById('lat').value,
+      lon: +document.getElementById('lon').value,
+      alt: +document.getElementById('alt').value,
+      roll: +document.getElementById('roll').value,
+      pitch: +document.getElementById('pitch').value,
+      yaw: +document.getElementById('yaw').value,
+      vn: +document.getElementById('vn').value,
+      ve: +document.getElementById('ve').value,
+      vd: +document.getElementById('vd').value,
+      dt: +document.getElementById('dt').value,
+    },
+    rows
+  };
+
+  try {
+    const raw_result = pyodide.runPython(`run_fusion_json(${JSON.stringify(payload)})`);
+    const r = JSON.parse(raw_result);
+    window._chartData = r;
+
+    // Update summary
+    document.getElementById('statFrames').textContent = r.num_samples;
+    document.getElementById('statAccept').textContent = r.mag_accept;
+    document.getElementById('statReject').textContent = r.mag_reject;
+
+    document.getElementById('insLat').textContent = r.ins_latitude_deg.toFixed(8) + '°';
+    document.getElementById('insLon').textContent = r.ins_longitude_deg.toFixed(8) + '°';
+    document.getElementById('insYaw').textContent = r.ins_yaw_deg.toFixed(3) + '°';
+    document.getElementById('insVn').textContent = r.ins_vn.toFixed(4) + ' m/s';
+
+    document.getElementById('ekfLat').textContent = r.latitude_deg.toFixed(8) + '°';
+    document.getElementById('ekfLon').textContent = r.longitude_deg.toFixed(8) + '°';
+    document.getElementById('ekfYaw').textContent = r.yaw_deg.toFixed(3) + '°';
+    document.getElementById('ekfVn').textContent = r.velocity_north_mps.toFixed(4) + ' m/s';
+
+    // Detail output
+    document.getElementById('detailOut').textContent = 
+`========== 松组合 EKF 融合结果 ==========
+处理帧数: ${r.num_samples}
+地磁更新: 接受 ${r.mag_accept}  拒绝 ${r.mag_reject}
+
+--- 纯 INS 推算 ---
+纬度: ${r.ins_latitude_deg.toFixed(8)}°
+经度: ${r.ins_longitude_deg.toFixed(8)}°
+偏航角: ${r.ins_yaw_deg.toFixed(3)}°
+北向速度: ${r.ins_vn.toFixed(4)} m/s
+
+--- 融合 EKF (本发明) ---
+纬度: ${r.latitude_deg.toFixed(8)}°
+经度: ${r.longitude_deg.toFixed(8)}°
+高度: ${r.altitude_m.toFixed(3)} m
+横滚: ${r.roll_deg.toFixed(3)}°  俯仰: ${r.pitch_deg.toFixed(3)}°  偏航: ${r.yaw_deg.toFixed(3)}°
+北向速度: ${r.velocity_north_mps.toFixed(4)} m/s
+东向速度: ${r.velocity_east_mps.toFixed(4)} m/s
+地向速度: ${r.velocity_down_mps.toFixed(4)} m/s
+
+========== 算法说明 ==========
+· 状态向量: 15维 (位置/速度/姿态误差 + 陀螺/加计零偏)
+· 观测: 地磁矢量残差 + 低动态加速度计约束
+· 鲁棒性: 场强一致性检查 | NIS卡方检验 | Huber降权
+· 地磁模型: WMM简化偶极子 + 北京区域磁异常`;
+
+    document.getElementById('statusDot').className = 'dot ok';
+    document.getElementById('statusText').textContent = `解算完成  |  地磁接受 ${r.mag_accept}/${r.num_samples} 帧  |  拒绝 ${r.mag_reject} 帧`;
+    btn.innerHTML = '<span>▶</span> 松组合解算';
+    btn.disabled = false;
+
+    // Draw charts if trajectory tab is active
+    if (document.getElementById('tab-traj').classList.contains('active')) {
+      drawCharts();
+    }
+  } catch(e) {
+    document.getElementById('statusText').textContent = '错误: ' + e;
+    document.getElementById('statusDot').className = 'dot wait';
+    btn.innerHTML = '<span>▶</span> 松组合解算';
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btnReset').addEventListener('click', () => {
+  document.getElementById('samples').value = defaultSamples;
+});
+
+// ===== Chart drawing =====
+function drawCharts() {
+  const r = window._chartData;
+  if (!r) return;
+
+  // Yaw chart
+  const ctxYaw = document.getElementById('chartYaw');
+  const dpr = window.devicePixelRatio || 1;
+  ctxYaw.width = ctxYaw.offsetWidth * dpr;
+  ctxYaw.height = 220 * dpr;
+  const cY = ctxYaw.getContext('2d');
+  cY.scale(dpr, dpr);
+  const wY = ctxYaw.offsetWidth, hY = 220;
+
+  cY.clearRect(0, 0, wY, hY);
+  cY.fillStyle = '#fafbfc';
+  cY.fillRect(0, 0, wY, hY);
+
+  // Grid
+  cY.strokeStyle = '#e8ecf1';
+  cY.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = 20 + i * (hY-40)/4;
+    cY.beginPath();
+    cY.moveTo(40, y); cY.lineTo(wY-20, y);
+    cY.stroke();
+    cY.fillStyle = '#999';
+    cY.font = '10px sans-serif';
+    cY.fillText((4-i)*2+'°', 4, y+4);
+  }
+
+  // Data
+  const n = r.history_ins.length;
+  const drawLine = (data, idx, color, dash) => {
+    cY.beginPath();
+    cY.strokeStyle = color;
+    cY.lineWidth = 2;
+    if (dash) cY.setLineDash([6, 3]); else cY.setLineDash([]);
+    for (let i = 0; i < n; i++) {
+      const x = 40 + (wY-60)*i/(n-1);
+      const y = 20 + (hY-40)*(1 - (data[i][idx]+10)/20);
+      if (i===0) cY.moveTo(x, Math.max(20, Math.min(hY-20, y)));
+      else cY.lineTo(x, Math.max(20, Math.min(hY-20, y)));
+    }
+    cY.stroke();
+    cY.setLineDash([]);
+  };
+
+  drawLine(r.history_ins, 2, '#d14836', false);      // INS yaw
+  drawLine(r.history_fusion, 2, '#0f7a3a', false);   // Fusion yaw
+
+  // Legend
+  cY.fillStyle = '#d14836'; cY.fillRect(wY-180, 8, 12, 4);
+  cY.fillStyle = '#333'; cY.font = '11px sans-serif';
+  cY.fillText('纯INS', wY-164, 14);
+  cY.fillStyle = '#0f7a3a'; cY.fillRect(wY-110, 8, 12, 4);
+  cY.fillText('EKF融合', wY-94, 14);
+
+  // Position chart
+  const ctxPos = document.getElementById('chartPos');
+  ctxPos.width = ctxPos.offsetWidth * dpr;
+  ctxPos.height = 220 * dpr;
+  const cP = ctxPos.getContext('2d');
+  cP.scale(dpr, dpr);
+  const wP = ctxPos.offsetWidth, hP = 220;
+
+  cP.clearRect(0, 0, wP, hP);
+  cP.fillStyle = '#fafbfc';
+  cP.fillRect(0, 0, wP, hP);
+
+  const lats_ins = r.history_ins.map(d=>d[0]), lons_ins = r.history_ins.map(d=>d[1]);
+  const lats_fus = r.history_fusion.map(d=>d[0]), lons_fus = r.history_fusion.map(d=>d[1]);
+
+  const margin = 0.00015;
+  const minLa = Math.min(...lats_ins, ...lats_fus) - margin;
+  const maxLa = Math.max(...lats_ins, ...lats_fus) + margin;
+  const minLo = Math.min(...lons_ins, ...lons_fus) - margin;
+  const maxLo = Math.max(...lons_ins, ...lons_fus) + margin;
+
+  const sx = (v) => 40 + (wP-60)*(v-minLo)/(maxLo-minLo || 1);
+  const sy = (v) => 20 + (hP-40)*(1-(v-minLa)/(maxLa-minLa || 1));
+
+  const drawPath = (lats, lons, color, dash) => {
+    cP.beginPath();
+    cP.strokeStyle = color;
+    cP.lineWidth = 2;
+    if (dash) cP.setLineDash([6, 3]); else cP.setLineDash([]);
+    for (let i = 0; i < n; i++) {
+      const x = sx(lons[i]), y = sy(lats[i]);
+      if (i===0) cP.moveTo(x, y); else cP.lineTo(x, y);
+    }
+    cP.stroke();
+    cP.setLineDash([]);
+  };
+
+  drawPath(lats_ins, lons_ins, '#d14836', false);
+  drawPath(lats_fus, lons_fus, '#0f7a3a', false);
+
+  cP.fillStyle = '#d14836'; cP.fillRect(wP-180, 8, 12, 4);
+  cP.fillStyle = '#333'; cP.font = '11px sans-serif';
+  cP.fillText('纯INS', wP-164, 14);
+  cP.fillStyle = '#0f7a3a'; cP.fillRect(wP-110, 8, 12, 4);
+  cP.fillText('EKF融合', wP-94, 14);
+}
+
+init();
+</script>
+</body>
+</html>
